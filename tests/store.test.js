@@ -11,7 +11,9 @@ test('はじめはサンプルだけ・インポートするとファイルの�
   assert.deepEqual(s.addItems(items), { added: 2, updated: 0 });
   assert.deepEqual(s.cards.slice(0, 2).map((c) => c.id), ['i2', 'i1']); // ファイルの順
   await s.grade('i1', 'good', 100);
-  assert.deepEqual(s.addItems(items), { added: 0, updated: 2 });
+  assert.deepEqual(s.addItems(items), { added: 0, updated: 0 }); // 同じ内容なら何もしない
+  assert.deepEqual(s.addItems([{ ...items[1], english: 'One!' }]), { added: 0, updated: 1 });
+  assert.equal(s.card('i1').english, 'One!');
   assert.equal(s.state('i1').reps, 1);
   // 保存したものを読みなおしても同じ
   const s2 = await new Store(ad).init();
@@ -52,7 +54,7 @@ test('バックアップ → 別の端末で元にもどす', async () => {
   await t.restoreBackup(r.backup);
   assert.equal(t.cards.length, s.cards.length); assert.equal(t.state(s.cards[0].id).reps, 1);
   assert.throws(() => t.restoreBackup({}), /バックアップ/);
-  await t.resetProgress(); assert.equal(Object.keys(t.data.states).length, 0); assert.equal(t.cards.length, s.cards.length);
+  await t.resetProgress(); assert.equal(Object.keys(t.states).length, 0); assert.ok(Object.values(t.data.states).every((x) => x.seen === 0 && x.ts)); assert.equal(t.state(s.cards[0].id), null); assert.equal(t.cards.length, s.cards.length);
 });
 
 test('レッスンごとの集計', async () => {

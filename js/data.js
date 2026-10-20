@@ -94,7 +94,8 @@ export function parseImport(text, filename = '') {
     const english = String(x?.english ?? x?.en ?? '').trim();
     if (!japanese || !english) { skipped++; return; }
     const raw = x.id != null && String(x.id).trim() !== '' ? String(x.id).trim() : '';
-    const id = 'i' + (raw ? raw : hashId(japanese + '\n' + english));
+    // id はクラウドのフィールド名にも使うので、英数字・_・- だけにする
+    const id = 'i' + (raw ? raw.replace(/[^\w-]/g, '_').slice(0, 80) : hashId(japanese + '\n' + english));
     if (seen.has(id)) { skipped++; return; }
     seen.add(id);
     out.push({ id, japanese, english, lesson: String(x.lesson || '').trim() || 'インポート', theme: String(x.theme || '').trim(),

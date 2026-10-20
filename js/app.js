@@ -4,12 +4,14 @@ import { Store } from './store.js';
 import { parseImport, splitNote, MY_LESSON } from './data.js';
 import { judge, wordDiff, repeatOk } from './match.js';
 import { buildList, Session, SET_SIZE, SETS_BEFORE_CONFIRM } from './session.js';
+import { CloudSync } from './cloud.js';
 import { speak, speakFromTap, stopSpeak, canSpeak, canListen, listen, armSpeechGestures, onSpeechBlocked } from './voice.js';
 
-export const APP_VERSION = '1.0.0';
+export const APP_VERSION = '1.1.0';
 const $app = document.getElementById('app');
 const $tab = document.getElementById('tabbar');
 const store = new Store();
+const cloud = new CloudSync(store);
 let session = null;   // { s: Session, phase, card state... }
 let mic = null;       // 今聞いている音声認識
 
@@ -50,9 +52,10 @@ function viewHome() {
   const st = store.stats(today());
   const todayN = st.due + Math.min(st.newLeft, st.fresh);
   const sk = streak(store.data.days, today());
-  const weakN = buildList('weak', store.cards, { states: store.data.states, lastGrades: store.data.last }).length;
+  const weakN = buildList('weak', store.cards, { states: store.states, lastGrades: store.lastGrades }).length;
   $app.innerHTML = `
     <div class="top"><h1>英語フレーズ</h1><span class="streak">連続 <b>${sk}</b> 日</span></div>
+    ${store.data.cloud ? `<div class="small" id="cloudLine" style="margin-top:-6px">${esc(cloudLabel())}</div>` : ''}
     ${store.hasImported() ? '' : `<div class="banner">いまはサンプル ${st.total} 問だけです。<a href="#/settings">フレーズのファイルを読み込む</a>と、教材のフレーズで練習できます。</div>`}
     <div class="panel today">
       <div class="num">${todayN}<small> 問</small></div>
@@ -92,7 +95,7 @@ function viewLessons() {
 // ---------- 勉強 ----------
 const MODE_LABEL = { today: '今日の復習', random: 'ランダム', lesson: 'レッスン', weak: '苦手だけ' };
 function startSession(mode, lesson = '') {
-  const ids = buildList(mode, store.cards, { states: store.data.states, today: today(), newLeft: store.newLeft(), lastGrades: store.data.last, lesson });
+  const ids = buildList(mode, store.cards, { states: store.states, today: today(), newLeft: store.newLeft(), lastGrades: store.lastGrades, lesson });
   if (!ids.length) { toast('出せるフレーズがありません'); return; }
   session = { s: new Session(ids, { mode, label: mode === 'lesson' ? lesson : MODE_LABEL[mode] }), phase: 'ask', setCorrect: 0 };
   newCard();
@@ -270,7 +273,7 @@ function renderBreak() {
 function viewProgress() {
   const t = today(); const st = store.stats(t);
   const sk = streak(store.data.days, t);
-  const up = upcoming(store.data.states, store.cards.map((c) => c.id), t, 7);
+  const up = upcoming(store.states, store.cards.map((c) => c.id), t, 7);
   const wd = ['日', '月', '火', '水', '木', '金', '土'];
   const ls = store.lessons();
   $app.innerHTML = `<div class="top"><h1>進み具合</h1><span class="streak">連続 <b>${sk}</b> 日</span></div>
@@ -333,7 +336,46 @@ function viewEdit(id) {
   const del = document.getElementById('fdel');
   if (del) del.onclick = () => { if (confirm('このフレーズを削除しますか？')) { store.deleteCard(c.id); toast('削除しました'); go('#/phrases'); } };
   const rs = document.getElementById('freset');
-  if (rs) rs.onclick = () => { delete store.data.states[c.id]; delete store.data.last[c.id]; store.changed(); toast('リセットしました'); viewEdit(c.id); };
+  if (rs) rs.onclick = () => { store.resetCard(c.id); toast('リセットしました'); viewEdit(c.id); };
+}
+
+// ---------- クラウド（Google ログイン・同期） ----------
+const STATUS_LABEL = { idle: '', syncing: '同期中…', ok: '同期済み', offline: 'オフライン（つながったら同期します）', error: '同期できませんでした', signedout: 'ログインが切れています' };
+function cloudLabel() {
+  const l = store.data.cloud; if (!l) return '';
+  const t = l.lastSync ? new Date(l.lastSync).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+  return `☁ ${STATUS_LABEL[cloud.status] || ''}${cloud.status === 'ok' && t ? `（${t}）` : ''}${cloud.status === 'error' ? `：${errText(cloud.error)}` : ''}`;
+}
+function errText(code) {
+  if (/permission-denied/.test(code)) return 'このアカウントには許可がありません（登録したアカウントでログインしてください）';
+  if (/unauthorized-domain/.test(code)) return 'このサイトのドメインが Firebase で許可されていません';
+  if (/popup-closed|cancelled-popup/.test(code)) return 'ログインを中止しました';
+  if (/network|unavailable|Failed to fetch|import/i.test(code)) return 'ネットにつながっていません';
+  return code || '不明なエラー';
+}
+function cloudPanelHtml() {
+  const l = store.data.cloud;
+  if (!l) return `<p class="small" style="margin-top:0">Google アカウントでログインすると、フレーズと覚えぐあいがクラウドに保存され、スマホ・iPad など別の端末でも同じ記録で続けられます。ログインしなくても、この端末だけで使えます。</p>
+    <button class="btn primary block" id="loginBtn">Google でログイン</button>`;
+  return `<p class="small" style="margin-top:0">${esc(l.email || '')}<br><span id="cloudStat">${esc(cloudLabel())}</span></p>
+    <div class="row"><button class="btn" id="syncBtn">今すぐ同期</button><button class="btn danger" id="logoutBtn">ログアウト</button></div>
+    <p class="small">ログアウトしても、この端末のフレーズと記録は残ります（この端末だけで続けられます）。</p>`;
+}
+function bindCloudPanel() {
+  const lb = document.getElementById('loginBtn');
+  if (lb) lb.onclick = async () => {
+    lb.disabled = true; lb.textContent = 'ログイン中…';
+    try {
+      const { signInGoogle } = await import('./cloud.js');
+      const r = await signInGoogle();
+      if (r && r.user) { await cloud.activate(r.user); toast(cloud.status === 'ok' ? 'ログインして同期しました' : errText(cloud.error), 3500); }
+    } catch (e) { toast('ログインできませんでした：' + errText(e.code || e.message), 4000); }
+    viewSettings();
+  };
+  const sb = document.getElementById('syncBtn');
+  if (sb) sb.onclick = async () => { await cloud.sync({ full: true }); toast(cloud.status === 'ok' ? '同期しました' : cloudLabel(), 3000); viewSettings(); };
+  const ob = document.getElementById('logoutBtn');
+  if (ob) ob.onclick = async () => { if (!confirm('ログアウトしますか？（この端末の記録は残ります）')) return; await cloud.signOut(); toast('ログアウトしました'); viewSettings(); };
 }
 
 // ---------- 設定・データ ----------
@@ -349,10 +391,12 @@ function viewSettings() {
       <div class="set-row"><div class="l">マイクで答える<small>${canListen() ? '音声認識（en-US）を使う' : 'この端末のブラウザは音声認識に未対応（入力で答えます）'}</small></div><input type="checkbox" class="switch" id="sMic" ${S.useMic ? 'checked' : ''} ${canListen() ? '' : 'disabled'}></div>
       <div class="set-row"><div class="l">採点のあと3回リピート</div><input type="checkbox" class="switch" id="sRep" ${S.repeat ? 'checked' : ''}></div>
     </div>
+    <div class="sec">クラウド同期</div>
+    <div class="panel" id="cloudPanel">${cloudPanelHtml()}</div>
     <div class="sec">フレーズのデータ</div>
     <div class="panel">
       <p class="small" style="margin-top:0">いま：読み込んだフレーズ ${counts.import || 0} ・ マイフレーズ ${counts.mine || 0} ・ サンプル ${counts.sample || 0}<br>
-      データはこの端末の中だけに保存されます（サーバーには送りません）。</p>
+      ${store.data.cloud ? 'データはこの端末と、あなたのアカウント専用のクラウドの場所に保存されます（ほかの人は読めません）。' : 'データはこの端末の中だけに保存されます（ログインするまでサーバーには送りません）。'}</p>
       <button class="btn primary block" id="impBtn">ファイルから読み込む（JSON / CSV）</button>
       <p class="small">JSON：<code>japanese</code>・<code>english</code>（任意で <code>id, lesson, theme, note</code>）の配列。CSV：見出しに japanese, english（日本語, 英語 でも可）。見出しがなければ 1列目＝日本語・2列目＝英語。同じ id のフレーズは上書きされ、覚えぐあいは残ります。</p>
       <input type="file" id="impFile" accept=".json,.csv,.tsv,.txt,application/json,text/csv,text/plain" hidden>
@@ -371,6 +415,7 @@ function viewSettings() {
     </div>
     <p class="small center">英語フレーズ ${APP_VERSION}</p>`;
   const $ = (id) => document.getElementById(id);
+  bindCloudPanel();
   $('sNew').onchange = (e) => store.setSetting('newPerDay', Math.max(0, Math.min(100, parseInt(e.target.value, 10) || 0)));
   $('sAuto').onchange = (e) => store.setSetting('autoSpeak', e.target.checked);
   $('sRate').onchange = (e) => { store.setSetting('rate', +e.target.value); say('This is the reading speed.', true); };
@@ -409,6 +454,22 @@ function viewSettings() {
   armSpeechGestures();
   onSpeechBlocked((on) => { const b = document.getElementById('speakBtn'); if (b) b.classList.toggle('blocked', on); });
   window.addEventListener('hashchange', route);
+  // 変えたら少し待ってクラウドへ。クラウドから新しい記録が来たら、勉強中でなければ画面をかきなおす
+  store.onChange(() => {
+    if (cloud.applying) { if (!location.hash.startsWith('#/study')) route(); return; }
+    cloud.schedule(2500, store.data.cardsDirty);
+  });
+  cloud.onStatus(() => {
+    for (const id of ['cloudLine', 'cloudStat']) { const el = document.getElementById(id); if (el) el.textContent = cloudLabel(); }
+  });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') cloud.schedule(300, true); });
+  window.addEventListener('online', () => cloud.schedule(300, true));
   route();
+  cloud.resume();
+  try {
+    if (['localhost', '127.0.0.1'].includes(location.hostname) && localStorage.getItem('english-phrases:emulator')) {
+      const m = await import('./cloud.js'); window.__ep = { store, cloud, signInEmulator: m.signInEmulator, route };
+    }
+  } catch {}
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
 })();
