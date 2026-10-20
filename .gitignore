@@ -1,0 +1,6 @@
+node_modules/
+.DS_Store
+# フレーズデータ（市販教材）は絶対にコミットしない
+*items*.json
+naruhodo*
+data/
