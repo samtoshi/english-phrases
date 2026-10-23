@@ -3,7 +3,9 @@ import { schedule, dayIndex, cardStatus, MASTERED_DAYS } from './srs.js';
 import { SAMPLE_PHRASES, MY_LESSON } from './data.js';
 
 export const KEY = 'english-phrases-v1';
-export const DEFAULT_SETTINGS = { newPerDay: 10, autoSpeak: true, rate: 0.9, useMic: true, repeat: true };
+// sheetId：読みこむ Google スプレッドシート（URL か ID。クラウドの設定に保存し、アプリのファイルには入れない）
+// sheetRemove：シートから消した行を、アプリからも消すか
+export const DEFAULT_SETTINGS = { newPerDay: 10, autoSpeak: true, rate: 0.9, useMic: true, repeat: true, sheetId: '', sheetRemove: false };
 
 export function memoryAdapter(init = null) {
   let v = init ? JSON.parse(JSON.stringify(init)) : null;
@@ -74,7 +76,7 @@ export class Store {
   /** フレーズを追加（同じ id は上書き。覚えぐあいはそのまま） */
   addItems(items, now = Date.now()) {
     let added = 0, updated = 0;
-    const same = (a, b) => ['japanese', 'english', 'lesson', 'theme', 'step', 'note', 'order'].every((k) => (a[k] ?? '') === (b[k] ?? ''));
+    const same = (a, b) => ['japanese', 'english', 'lesson', 'theme', 'step', 'note', 'order', 'from'].every((k) => (a[k] ?? '') === (b[k] ?? ''));
     for (const it of items) {
       const prev = this.data.cards[it.id];
       if (prev && same(prev, it)) continue; // 同じ内容なら何もしない（クラウドにも送らない）
@@ -84,6 +86,25 @@ export class Store {
     }
     if (added || updated) { this.markCards(); this.changed(); }
     return { added, updated };
+  }
+  /**
+   * スプレッドシートの中身をまとめる：新しい行・変わった行は追加・上書き（覚えぐあいはそのまま）
+   * removeMissing のときだけ、前にシートから来て、今のシートにない行を削除する
+   * （シートを取りちがえたときに全部消えないよう、今のシートと1行も重ならなければ削除しない）
+   */
+  applySheet(items, { removeMissing = false, now = Date.now() } = {}) {
+    const ids = new Set(items.map((x) => x.id));
+    const prev = Object.values(this.data.cards).filter((c) => c.from === 'sheet');
+    const r = this.addItems(items, now);
+    let removed = 0, removeSkipped = false;
+    if (removeMissing) {
+      const gone = prev.filter((c) => !ids.has(c.id));
+      if (gone.length && gone.length === prev.length) removeSkipped = true;
+      else if (gone.length) { for (const c of gone) this._del(c.id, now); removed = gone.length; this.markCards(); this.changed(); }
+    }
+    this.data.sheetPull = { at: now, rows: items.length, ...r, removed };
+    this.save();
+    return { ...r, removed, removeSkipped };
   }
   saveCard({ id, japanese, english, note = '', lesson = '' }) {
     japanese = String(japanese || '').trim(); english = String(english || '').trim();

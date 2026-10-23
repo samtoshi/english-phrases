@@ -4,6 +4,7 @@
 // - Firebase の SDK は、ログインしたときだけ読みこむ（オフラインでも起動は速いまま）
 import { firebaseConfig, appCheckSiteKey, ROOT_COLLECTION } from './firebase-config.js';
 import { syncOnce } from './cloudsync.js';
+import { SHEETS_SCOPE } from './sheets.js';
 
 export const SDK_VERSION = '13.0.0';
 const CDN = `https://www.gstatic.com/firebasejs/${SDK_VERSION}/`;
@@ -42,6 +43,8 @@ export function loadFirebase() {
       fs.connectFirestoreEmulator(db, emu.host, emu.fsPort);
     }
     await auth.authStateReady();
+    // ログイン画面に移って戻ってきたとき（ポップアップが使えない端末）：シートを読むためのトークンを受けとる
+    try { const r = await authM.getRedirectResult(auth); if (r) keepSheetsToken(authM, r); } catch (e) { console.warn('redirect', e); }
     return { app, auth, authM, fs, db, emu };
   })().catch((e) => { fbPromise = null; throw e; });
   return fbPromise;
@@ -59,6 +62,51 @@ export async function signInGoogle() {
     throw e;
   }
 }
+// ---------- スプレッドシートを読むためのトークン ----------
+// Google のアクセストークン（読み取りだけ・約1時間で切れる）。この端末の localStorage にだけ置く
+const TOKEN_KEY = 'english-phrases:gtoken';
+function keepSheetsToken(authM, result) {
+  const c = authM.GoogleAuthProvider.credentialFromResult(result);
+  const scopes = String(result?._tokenResponse?.oauthScopes || result?._tokenResponse?.scope || '');
+  if (!c?.accessToken) return null;
+  if (scopes && !scopes.includes('spreadsheets')) return null; // ふつうのログイン（シートの許可なし）
+  const t = { token: c.accessToken, exp: Date.now() + 55 * 60 * 1000, uid: result.user?.uid || '' };
+  try { localStorage.setItem(TOKEN_KEY, JSON.stringify(t)); } catch {}
+  return t.token;
+}
+/** まだ使えるトークンがあれば返す（なければ null。画面を出さない） */
+export function storedSheetsToken(uid) {
+  try {
+    const t = JSON.parse(localStorage.getItem(TOKEN_KEY) || 'null');
+    if (t && t.token && t.exp > Date.now() + 60 * 1000 && (!uid || !t.uid || t.uid === uid)) return t.token;
+  } catch {}
+  return null;
+}
+export function forgetSheetsToken() { try { localStorage.removeItem(TOKEN_KEY); } catch {} }
+/**
+ * シートの読み取りを Google に許可してもらい、トークンをもらう（ボタンを押したときだけ。ポップアップが出る）
+ * ログインしていなければ、このときいっしょにログインする。戻り値：{ token, user, signedIn }
+ */
+export async function requestSheetsAccess() {
+  const fb = await loadFirebase();
+  const p = new fb.authM.GoogleAuthProvider();
+  p.addScope(SHEETS_SCOPE);
+  const u = fb.auth.currentUser;
+  p.setCustomParameters(u?.email ? { login_hint: u.email } : { prompt: 'select_account' });
+  let r;
+  try { r = u ? await fb.authM.reauthenticateWithPopup(u, p) : await fb.authM.signInWithPopup(fb.auth, p); }
+  catch (e) {
+    if (/popup-blocked|operation-not-supported/.test(e.code || '')) {
+      if (u) await fb.authM.reauthenticateWithRedirect(u, p); else await fb.authM.signInWithRedirect(fb.auth, p);
+      return { token: null, redirected: true };
+    }
+    throw e;
+  }
+  const token = keepSheetsToken(fb.authM, r);
+  if (!token) throw Object.assign(new Error('シートの読み取りが許可されませんでした'), { code: 'sheets/no-scope' });
+  return { token, user: r.user, signedIn: !u };
+}
+
 /** エミュレーターのときだけ：にせの Google アカウントでログイン（テスト用） */
 export async function signInEmulator(email) {
   const fb = await loadFirebase();
@@ -122,6 +170,7 @@ export class CloudSync {
   async signOut() {
     clearTimeout(this.timer);
     try { await signOut(); } catch {}
+    forgetSheetsToken();
     this.user = null; this.store.data.cloud = null; this.store.save(); this.setStatus('idle');
   }
   schedule(ms = 2500, full = false) {

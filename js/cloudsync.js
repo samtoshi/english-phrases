@@ -3,7 +3,7 @@
 //   phrasebook/{uid}/cards/b0〜b7 … フレーズ本体（インポートした教材・マイフレーズ・削除の印）
 import { mergeStates, mergeCards, mergeMeta, toBuckets, stableJSON, BUCKETS } from './merge.js';
 
-const SYNC_SETTINGS = ['newPerDay', 'autoSpeak', 'rate', 'repeat'];
+const SYNC_SETTINGS = ['newPerDay', 'autoSpeak', 'rate', 'repeat', 'sheetId', 'sheetRemove'];
 
 /**
  * 1回の同期：引っぱる → まぜる → ちがう分だけ送る

@@ -5,9 +5,10 @@ import { parseImport, splitNote, MY_LESSON } from './data.js';
 import { judge, wordDiff, repeatOk } from './match.js';
 import { buildList, Session, SET_SIZE, SETS_BEFORE_CONFIRM } from './session.js';
 import { CloudSync } from './cloud.js';
+import { parseSheetRef, sheetRefString, sheetUrl } from './sheets.js';
 import { speak, speakFromTap, stopSpeak, canSpeak, canListen, listen, armSpeechGestures, onSpeechBlocked } from './voice.js';
 
-export const APP_VERSION = '1.1.0';
+export const APP_VERSION = '1.2.0';
 const $app = document.getElementById('app');
 const $tab = document.getElementById('tabbar');
 const store = new Store();
@@ -56,7 +57,8 @@ function viewHome() {
   $app.innerHTML = `
     <div class="top"><h1>英語フレーズ</h1><span class="streak">連続 <b>${sk}</b> 日</span></div>
     ${store.data.cloud ? `<div class="small" id="cloudLine" style="margin-top:-6px">${esc(cloudLabel())}</div>` : ''}
-    ${store.hasImported() ? '' : `<div class="banner">いまはサンプル ${st.total} 問だけです。<a href="#/settings">フレーズのファイルを読み込む</a>と、教材のフレーズで練習できます。</div>`}
+    ${sheetBannerHtml()}
+    ${store.hasImported() || store.settings.sheetId ? '' : `<div class="banner">いまはサンプル ${st.total} 問だけです。<a href="#/settings">フレーズのファイルを読み込む</a>と、教材のフレーズで練習できます。</div>`}
     <div class="panel today">
       <div class="num">${todayN}<small> 問</small></div>
       <div class="sub">今日の復習 ${st.due} ・ 新しいフレーズ ${Math.min(st.newLeft, st.fresh)}${st.todayCount ? ` ・ 今日 ${st.todayCount} 回答済み` : ''}</div>
@@ -73,6 +75,7 @@ function viewHome() {
       <div class="small" style="margin-top:6px">覚えた ${st.mastered} ・ 練習中 ${st.learning} ・ まだ ${st.fresh}（全${st.total}）</div>
     </div>`;
   document.getElementById('startToday').onclick = () => startSession('today');
+  bindSheetButtons();
   document.getElementById('mRandom').onclick = () => startSession('random');
   document.getElementById('mWeak').onclick = () => startSession('weak');
 }
@@ -378,6 +381,108 @@ function bindCloudPanel() {
   if (ob) ob.onclick = async () => { if (!confirm('ログアウトしますか？（この端末の記録は残ります）')) return; await cloud.signOut(); toast('ログアウトしました'); viewSettings(); };
 }
 
+// ---------- Google スプレッドシート ----------
+const sheet = { busy: false, needTap: false, msg: '' };
+const SHEET_ERR = {
+  auth: 'Google の許可が切れました。もう一度「シートから読み込む」を押してください',
+  scope: 'シートを読む許可がありません。「シートから読み込む」を押して、スプレッドシートの読み取りを許可してください',
+  disabled: 'Google Sheets API がまだ有効になっていません（Google Cloud で有効にしてください）',
+  forbidden: 'このシートを読む権限がありません（シートの持ち主のアカウントでログインしてください）',
+  notfound: 'シートが見つかりません（URL か ID を確認してください）',
+  empty: 'シートに「日本語」と「英語」の両方がある行がありません',
+  network: 'ネットにつながっていません',
+};
+function sheetErrText(e) {
+  const code = e?.code || '';
+  if (SHEET_ERR[code]) return SHEET_ERR[code];
+  if (/user-mismatch/.test(code)) return 'ログイン中と別のアカウントが選ばれました。同じアカウントを選んでください';
+  return errText(code || e?.message);
+}
+function sheetBannerHtml() {
+  if (!store.settings.sheetId || !store.data.cloud) return '';
+  if (sheet.busy) return '<div class="banner">スプレッドシートを確認しています…</div>';
+  if (sheet.needTap) return `<div class="banner">スプレッドシートの変更を取りこめます。<button class="btn" data-sheet-pull style="margin-top:6px">シートから読み込む</button></div>`;
+  return '';
+}
+function bindSheetButtons() {
+  for (const b of document.querySelectorAll('[data-sheet-pull]')) b.onclick = () => sheetPull({ interactive: true });
+}
+/** シートを読む。interactive＝ボタンを押したとき（必要なら Google の許可の画面を出す） */
+async function sheetPull({ interactive = false, quiet = false } = {}) {
+  const ref = parseSheetRef(store.settings.sheetId);
+  if (!ref || sheet.busy) return;
+  if (!interactive && !store.data.cloud) return;
+  const m = await import('./cloud.js');
+  const { pullSheet } = await import('./sheets.js');
+  let token = m.storedSheetsToken(store.data.cloud?.uid);
+  if (!token && !interactive) { sheet.needTap = true; if (!location.hash.startsWith('#/study')) refreshSheetUi(); return; }
+  sheet.busy = true; refreshSheetUi();
+  try {
+    if (!token) {
+      const r = await m.requestSheetsAccess();
+      if (r.redirected) return; // Google の画面に移る（戻ってきたら読みこむ）
+      token = r.token;
+      if (r.signedIn && r.user) await cloud.activate(r.user);
+    }
+    let res;
+    try { res = await pullSheet(store, token, ref); }
+    catch (e) {
+      if (e.code !== 'auth' || !interactive) throw e;
+      m.forgetSheetsToken(); // 切れていた：もう一度許可をもらって1回だけやりなおす
+      const r = await m.requestSheetsAccess(); if (r.redirected) return;
+      res = await pullSheet(store, r.token, ref);
+    }
+    sheet.needTap = false;
+    sheet.msg = `シート ${res.rows} 行：新規 ${res.added}・更新 ${res.updated}${res.removed ? `・削除 ${res.removed}` : ''}${res.skipped ? `・スキップ ${res.skipped}` : ''}`;
+    if (res.removeSkipped) sheet.msg += '（シートと1行も重ならないので、削除はしませんでした）';
+    if (!quiet || res.added || res.updated || res.removed) toast(sheet.msg, 3500);
+  } catch (e) {
+    if (e.code === 'auth') { m.forgetSheetsToken(); sheet.needTap = true; }
+    sheet.msg = '読み込めませんでした：' + sheetErrText(e);
+    if (interactive || e.code !== 'auth') toast(sheet.msg, 4500);
+  } finally {
+    sheet.busy = false;
+    if (!location.hash.startsWith('#/study')) route(); else refreshSheetUi();
+  }
+}
+function refreshSheetUi() {
+  const h = location.hash.replace(/^#\/?/, '');
+  if (h === '' || h.startsWith('settings')) route();
+}
+function sheetPanelHtml() {
+  const S = store.settings; const ref = parseSheetRef(S.sheetId);
+  const p = store.data.sheetPull;
+  const last = p ? `前回：${new Date(p.at).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}（${p.rows} 行）` : '';
+  return `<p class="small" style="margin-top:0">自分の Google ドライブのスプレッドシートからフレーズを読み込みます（読み取りだけ。シートは公開しません）。見出しは <code>id, japanese, english, note, lesson, theme</code>（日本語・英語などの名前でも可）。id がない行は、日本語と英語から決まった id をつけます。覚えぐあいは残ります。</p>
+    <input type="text" id="sSheet" placeholder="シートの URL か ID" value="${esc(S.sheetId || '')}" style="width:100%;box-sizing:border-box" autocomplete="off" spellcheck="false">
+    ${ref ? `<p class="small"><a href="${esc(sheetUrl(ref))}" target="_blank" rel="noopener">シートを開く</a>${last ? ' ・ ' + esc(last) : ''}</p>` : ''}
+    <div class="set-row"><div class="l">シートから消した行は、アプリからも削除<small>オフなら、シートから消してもアプリには残ります</small></div><input type="checkbox" class="switch" id="sSheetRm" ${S.sheetRemove ? 'checked' : ''}></div>
+    <button class="btn primary block" data-sheet-pull ${ref && !sheet.busy ? '' : 'disabled'}>${sheet.busy ? '読み込み中…' : 'シートから読み込む'}</button>
+    ${sheet.msg ? `<p class="small">${esc(sheet.msg)}</p>` : ''}
+    <p class="small">${store.data.cloud ? 'ログイン中は、アプリを開いたときにも自動で確認します（Google の許可は約1時間で切れるので、そのあとはボタンを1回押してください）。' : 'はじめて読み込むときに Google でログインし、スプレッドシートの読み取りを許可します。'}</p>`;
+}
+function bindSheetPanel() {
+  const i = document.getElementById('sSheet');
+  if (i) i.onchange = () => {
+    const v = i.value.trim();
+    const ref = parseSheetRef(v);
+    if (v && !ref) { toast('スプレッドシートの URL か ID ではないようです'); return; }
+    store.setSetting('sheetId', sheetRefString(ref)); sheet.msg = ''; viewSettings();
+  };
+  const rm = document.getElementById('sSheetRm');
+  if (rm) rm.onchange = (e) => store.setSetting('sheetRemove', e.target.checked);
+  bindSheetButtons();
+}
+/** リンクで開いたとき（…/#/settings?sheet=ID など）：シートを設定に入れる（URL からは消す） */
+function takeSheetFromUrl() {
+  const m = location.href.match(/[?&]sheet=([^&#]+)/);
+  if (!m) return;
+  const ref = parseSheetRef(decodeURIComponent(m[1]));
+  if (ref && sheetRefString(ref) !== store.settings.sheetId) { store.setSetting('sheetId', sheetRefString(ref)); toast('スプレッドシートを設定しました'); }
+  const clean = location.href.replace(/[?&]sheet=[^&#]+/, '').replace(/\?(#|$)/, '$1');
+  history.replaceState(null, '', clean);
+}
+
 // ---------- 設定・データ ----------
 function viewSettings() {
   const S = store.settings;
@@ -393,6 +498,8 @@ function viewSettings() {
     </div>
     <div class="sec">クラウド同期</div>
     <div class="panel" id="cloudPanel">${cloudPanelHtml()}</div>
+    <div class="sec">Google スプレッドシート</div>
+    <div class="panel" id="sheetPanel">${sheetPanelHtml()}</div>
     <div class="sec">フレーズのデータ</div>
     <div class="panel">
       <p class="small" style="margin-top:0">いま：読み込んだフレーズ ${counts.import || 0} ・ マイフレーズ ${counts.mine || 0} ・ サンプル ${counts.sample || 0}<br>
@@ -416,6 +523,7 @@ function viewSettings() {
     <p class="small center">英語フレーズ ${APP_VERSION}</p>`;
   const $ = (id) => document.getElementById(id);
   bindCloudPanel();
+  bindSheetPanel();
   $('sNew').onchange = (e) => store.setSetting('newPerDay', Math.max(0, Math.min(100, parseInt(e.target.value, 10) || 0)));
   $('sAuto').onchange = (e) => store.setSetting('autoSpeak', e.target.checked);
   $('sRate').onchange = (e) => { store.setSetting('rate', +e.target.value); say('This is the reading speed.', true); };
@@ -451,6 +559,7 @@ function viewSettings() {
 // ---------- 起動 ----------
 (async function main() {
   await store.init();
+  takeSheetFromUrl();
   armSpeechGestures();
   onSpeechBlocked((on) => { const b = document.getElementById('speakBtn'); if (b) b.classList.toggle('blocked', on); });
   window.addEventListener('hashchange', route);
@@ -462,10 +571,17 @@ function viewSettings() {
   cloud.onStatus(() => {
     for (const id of ['cloudLine', 'cloudStat']) { const el = document.getElementById(id); if (el) el.textContent = cloudLabel(); }
   });
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') cloud.schedule(300, true); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    cloud.schedule(300, true);
+    // 10分以上たっていて、まだ許可が切れていなければ、シートも確認
+    const p = store.data.sheetPull;
+    if (store.settings.sheetId && store.data.cloud && (!p || Date.now() - p.at > 10 * 60 * 1000)) sheetPull({ quiet: true });
+  });
   window.addEventListener('online', () => cloud.schedule(300, true));
   route();
-  cloud.resume();
+  // ログイン中なら、同期（シートの設定もクラウドから来る）のあとでシートを確認
+  cloud.resume().finally(() => { if (store.settings.sheetId && store.data.cloud) sheetPull({ quiet: true }); });
   try {
     if (['localhost', '127.0.0.1'].includes(location.hostname) && localStorage.getItem('english-phrases:emulator')) {
       const m = await import('./cloud.js'); window.__ep = { store, cloud, signInEmulator: m.signInEmulator, route };
