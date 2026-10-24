@@ -99,3 +99,28 @@ test('ボタンの表示', () => {
   assert.equal(previewLabel(null, 'good', T), 'あした');
   assert.equal(previewLabel(null, 'easy', T), '3日後');
 });
+
+test('今日まちがえた（もう一回）カードは、ホームの「今日の問題数」から外れて「やり直し」になり、キューの最後に回る', async () => {
+  const { Store } = await import('../js/store.js');
+  const mem = { d: null };
+  const s = new Store({ load: async () => mem.d, save: async (d) => { mem.d = d; } });
+  await s.init();
+  s.data.settings.newPerDay = 10;
+  const T = 100;
+  const ids = s.cards.map((c) => c.id);
+  const before = s.stats(T);
+  const todayN = (st) => st.due + Math.min(st.newLeft, st.fresh);
+  const n0 = todayN(before);
+  // 新しいフレーズ2問を「もう一回」、1問を「言えた」
+  s.grade(ids[0], 'again', T); s.grade(ids[1], 'again', T); s.grade(ids[2], 'good', T);
+  const after = s.stats(T);
+  assert.equal(after.relearn, 2);
+  assert.equal(after.due, 0);
+  assert.equal(todayN(after), n0 - 3); // 答えた分だけ減る（以前は「もう一回」の分が残って減らなかった）
+  const q = buildQueue(s.cards, s.states, T, s.newLeft(T)).map((c) => c.id);
+  assert.deepEqual(q.slice(-2).sort(), [ids[0], ids[1]].sort()); // やり直しは最後
+  assert.ok(!q.includes(ids[2]));
+  // 次の日は、ふつうの復習として数える
+  const next = s.stats(T + 1);
+  assert.equal(next.relearn, 0); assert.ok(next.due >= 2);
+});

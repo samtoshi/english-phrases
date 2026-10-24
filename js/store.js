@@ -1,5 +1,5 @@
 // 端末の中の記録（localStorage）。フレーズ・覚えぐあい・設定をまとめて1つに保存します。
-import { schedule, dayIndex, cardStatus, MASTERED_DAYS } from './srs.js';
+import { schedule, dayIndex, cardStatus, MASTERED_DAYS, isRelearn } from './srs.js';
 import { SAMPLE_PHRASES, MY_LESSON } from './data.js';
 
 export const KEY = 'english-phrases-v1';
@@ -148,15 +148,17 @@ export class Store {
   /** 進み具合 */
   stats(today = dayIndex()) {
     const cards = this.cards; const st = this.states;
-    let mastered = 0, learning = 0, fresh = 0, due = 0;
+    let mastered = 0, learning = 0, fresh = 0, due = 0, relearn = 0;
     for (const c of cards) {
       const s = cardStatus(st[c.id]);
       if (s === 'mastered') mastered++; else if (s === 'learning') learning++; else fresh++;
-      if (st[c.id] && st[c.id].seen && st[c.id].due <= today) due++;
+      // 今日まちがえて「もう一回」になったものは、まだやっていない復習（due）とは別に数える（ホームの数が減らないように）
+      if (isRelearn(st[c.id], today)) relearn++;
+      else if (st[c.id] && st[c.id].seen && st[c.id].due <= today) due++;
     }
     const repeated = cards.filter((c) => this.data.reps[c.id]).length;
     const todayCount = this.data.log.filter((e) => dayIndex(new Date(e.t)) === today).length;
-    return { total: cards.length, mastered, learning, fresh, due, repeated, todayCount, newLeft: this.newLeft(today), masteredDays: MASTERED_DAYS };
+    return { total: cards.length, mastered, learning, fresh, due, relearn, repeated, todayCount, newLeft: this.newLeft(today), masteredDays: MASTERED_DAYS };
   }
   /** レッスンごと（並び順のまま） */
   lessons() {

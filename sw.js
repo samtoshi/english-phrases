@@ -1,5 +1,5 @@
 // オフラインでも使えるようにするサービスワーカー（アプリ本体のファイルを変えたら VERSION を上げる）
-const VERSION = 'v4';
+const VERSION = 'v5';
 // 同じサイト（samtoshi.github.io）の anki-app とキャッシュの置き場が共通なので、名前に ep- をつけて、自分のものだけ消す
 const P = 'ep-';
 const SHELL = [

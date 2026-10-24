@@ -10,7 +10,7 @@ import { CloudSync } from './cloud.js';
 import { parseSheetRef, sheetRefString, sheetUrl } from './sheets.js';
 import { speak, speakFromTap, stopSpeak, canSpeak, canListen, listen, armSpeechGestures, onSpeechBlocked } from './voice.js';
 
-export const APP_VERSION = '1.3.0';
+export const APP_VERSION = '1.3.1';
 const $app = document.getElementById('app');
 const $tab = document.getElementById('tabbar');
 const store = new Store();
@@ -53,7 +53,7 @@ const go = (h) => { if (location.hash === h) route(); else location.hash = h; };
 // ---------- ホーム ----------
 function viewHome() {
   const st = store.stats(today());
-  const todayN = st.due + Math.min(st.newLeft, st.fresh);
+  const todayN = st.due + Math.min(st.newLeft, st.fresh); // まだ今日やっていない分（やり直しはふくめない）
   const sk = streak(store.data.days, today());
   const weakN = buildList('weak', store.cards, { states: store.states, lastGrades: store.lastGrades }).length;
   $app.innerHTML = `
@@ -63,8 +63,8 @@ function viewHome() {
     ${store.hasImported() || store.settings.sheetId ? '' : `<div class="banner">いまはサンプル ${st.total} 問だけです。<a href="#/settings">フレーズのファイルを読み込む</a>と、教材のフレーズで練習できます。</div>`}
     <div class="panel today">
       <div class="num">${todayN}<small> 問</small></div>
-      <div class="sub">今日の復習 ${st.due} ・ 新しいフレーズ ${Math.min(st.newLeft, st.fresh)}${st.todayCount ? ` ・ 今日 ${st.todayCount} 回答済み` : ''}</div>
-      <button class="btn primary big block" id="startToday" ${todayN ? '' : 'disabled'}>${todayN ? '今日の復習をはじめる' : '今日の分は終わりました'}</button>
+      <div class="sub">今日の復習 ${st.due} ・ 新しいフレーズ ${Math.min(st.newLeft, st.fresh)}${st.relearn ? ` ・ やり直し ${st.relearn}` : ''}${st.todayCount ? ` ・ 今日 ${st.todayCount} 回答済み` : ''}</div>
+      <button class="btn primary big block" id="startToday" ${todayN || st.relearn ? '' : 'disabled'}>${todayN ? '今日の練習をはじめる' : st.relearn ? `まちがえた ${st.relearn} 問をやり直す` : '今日の分は終わりました'}</button>
     </div>
     <div class="modes">
       <button class="mode" id="mRandom"><b>ランダム</b><span>全${st.total}問から</span></button>
@@ -100,7 +100,7 @@ function viewLessons() {
 }
 
 // ---------- 勉強 ----------
-const MODE_LABEL = { today: '今日の復習', random: 'ランダム', lesson: 'レッスン', weak: '苦手だけ' };
+const MODE_LABEL = { today: '今日の練習', random: 'ランダム', lesson: 'レッスン', weak: '苦手だけ' };
 function startSession(mode, lesson = '') {
   const ids = buildList(mode, store.cards, { states: store.states, today: today(), newLeft: store.newLeft(), lastGrades: store.lastGrades, lesson });
   if (!ids.length) { toast('出せるフレーズがありません'); return; }
@@ -603,7 +603,7 @@ function viewSettings() {
   const counts = store.cards.reduce((a, c) => ((a[c.src] = (a[c.src] || 0) + 1), a), {});
   $app.innerHTML = `<div class="top"><h1>設定</h1></div>
     <div class="panel">
-      <div class="set-row"><div class="l">新しいフレーズ（1日）<small>今日の復習に入る新しいフレーズの数</small></div>
+      <div class="set-row"><div class="l">新しいフレーズ（1日）<small>今日の練習に入る新しいフレーズの数</small></div>
         <input type="number" id="sNew" min="0" max="100" value="${S.newPerDay}" style="width:80px"></div>
       <div class="set-row"><div class="l">答えを自動で読み上げる<small>${canSpeak() ? '英語（en-US）の音声' : 'この端末では読み上げが使えません'}</small></div><input type="checkbox" class="switch" id="sAuto" ${S.autoSpeak ? 'checked' : ''}></div>
       <div class="set-row"><div class="l">読み上げの速さ</div><select id="sRate">${[[0.7, 'ゆっくり'], [0.8, 'やや遅め'], [0.9, 'ふつう'], [1, '速め']].map(([r, l]) => `<option value="${r}" ${+S.rate === r ? 'selected' : ''}>${l}</option>`).join('')}</select></div>

@@ -111,12 +111,20 @@ export function retrievability(state, today) {
  * @param {number} today
  * @param {number} newLeft 今日あと何枚 新しいカードを出してよいか
  */
+/** 今日すでに答えて「もう一回」になった（今日のうちにやり直す）カード */
+export function isRelearn(state, today) {
+  return isDue(state, today) && state.last === today;
+}
+
+/** 今日の練習：まだ今日やっていない復習と新しいカード（交互）→ 最後に今日まちがえたカードのやり直し */
 export function buildQueue(cards, states, today, newLeft) {
   const due = [];
   const fresh = [];
+  const again = [];
   for (const c of cards) {
     const s = states[c.id];
-    if (isDue(s, today)) due.push(c);
+    if (isRelearn(s, today)) again.push(c);
+    else if (isDue(s, today)) due.push(c);
     else if (cardStatus(s) === 'new') fresh.push(c);
   }
   // 期限切れが古いものから
@@ -130,7 +138,7 @@ export function buildQueue(cards, states, today, newLeft) {
     if (i < due.length) out.push(due[i++]);
     if (j < news.length) out.push(news[j++]);
   }
-  return out;
+  return out.concat(again);
 }
 
 /** これから n 日間に復習がくる枚数 */
