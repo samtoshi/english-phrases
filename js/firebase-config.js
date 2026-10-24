@@ -17,3 +17,7 @@ export const ROOT_COLLECTION = 'phrasebook';
 export function isFirebaseConfigured(cfg = firebaseConfig) {
   return !!(cfg && cfg.apiKey && cfg.projectId && !String(cfg.apiKey).startsWith('YOUR'));
 }
+
+// 「AIに質問」で使うモデル（Firebase AI Logic / Gemini Developer API。anki-app と同じ）。
+// 上から順に使い、その日の上限に達した・使えないモデルは次のモデルにかえます。APIキーはアプリに入れず、App Check で守ります。
+export const aiModels = ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'];

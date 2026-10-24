@@ -45,3 +45,23 @@ test('「もう一回」はセッションの最後にもう一度（2回まで�
   assert.equal(s.current, 'a'); s.grade('again'); assert.equal(s.queue.length, 4); // 3回目はもう足さない
   assert.equal(s.advance(), 'done');
 });
+
+test('ストップ用の結果：正解・ほぼ正解・まちがい・マスター・まちがえたフレーズ', async () => {
+  const { Session, summarize } = await import('../js/session.js');
+  const s = new Session(['a', 'b', 'c', 'd', 'e']);
+  s.checked('exact', 'x'); s.grade('good'); s.master('a'); s.advance();
+  s.checked('close', 'y'); s.grade('good'); s.advance();
+  s.checked('diff', 'z'); s.grade('again'); s.advance();
+  s.checked('empty', ''); s.grade('hard'); s.advance();
+  s.checked('diff', 'w'); // 採点前にストップ → 数えない
+  const r = summarize(s);
+  assert.equal(r.answered, 4);
+  assert.deepEqual([r.correct, r.almost, r.wrong, r.mastered], [1, 2, 1, 1]); // 入力なし＋「難しい」はほぼ正解
+  assert.deepEqual(r.missed.map((m) => m.id), ['c']);
+  assert.equal(r.missed[0].answer, 'z');
+  // 同じフレーズのやり直し（もう一回で後ろにまわる）は、まちがいリストに1回だけ
+  const t = new Session(['p']);
+  t.checked('diff', 'q'); t.grade('again'); t.advance();
+  t.checked('diff', 'q2'); t.grade('again');
+  assert.equal(summarize(t).missed.length, 1); assert.equal(summarize(t).wrong, 2);
+});

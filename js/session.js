@@ -46,14 +46,24 @@ export class Session {
   constructor(ids, { mode = 'today', label = '' } = {}) {
     this.queue = ids.slice(); this.i = 0; this.mode = mode; this.label = label;
     this.answered = 0; this.correct = 0; this.mastered = new Set(); this.requeued = {};
+    this.log = []; // 1回答えるごと：{ id, verdict, answer, grade }
   }
   get current() { return this.queue[this.i] ?? null; }
   get left() { return this.queue.length - this.i; }
   /** 今のセットの何問目か（1〜5）・何セット目か */
   get posInSet() { return (this.answered % SET_SIZE) + 1; }
   get setNo() { return Math.floor(this.answered / SET_SIZE) + 1; }
+  /** 答え合わせの結果をおぼえる（自己採点の前） */
+  checked(verdict, answer = '') {
+    const id = this.current; if (id == null) return;
+    const last = this.log[this.log.length - 1];
+    if (last && last.id === id && last.grade == null && last.i === this.i) Object.assign(last, { verdict, answer });
+    else this.log.push({ id, i: this.i, verdict, answer, grade: null });
+  }
   grade(g) {
     const id = this.current; if (id == null) return;
+    const last = this.log[this.log.length - 1];
+    if (last && last.id === id && last.i === this.i && last.grade == null) last.grade = g; else this.log.push({ id, i: this.i, verdict: 'empty', answer: '', grade: g });
     this.answered++;
     if (g === 'good' || g === 'easy') this.correct++;
     if (g === 'again' && (this.requeued[id] || 0) < 2) { this.requeued[id] = (this.requeued[id] || 0) + 1; this.queue.push(id); }
@@ -66,4 +76,24 @@ export class Session {
     if (this.answered % SET_SIZE === 0) return this.answered % (SET_SIZE * SETS_BEFORE_CONFIRM) === 0 ? 'bigEnd' : 'setEnd';
     return 'next';
   }
+}
+
+/** 1回の答えを「正解・ほぼ正解・まちがい」に分ける（入力なしのときは自己採点で） */
+export function outcome(e) {
+  if (e.verdict === 'exact') return 'correct';
+  if (e.verdict === 'close') return 'almost';
+  if (e.verdict === 'diff') return 'wrong';
+  return e.grade === 'good' || e.grade === 'easy' ? 'correct' : e.grade === 'hard' ? 'almost' : 'wrong';
+}
+
+/** ここまでの結果（採点まで済んだ答えだけ数える） */
+export function summarize(s) {
+  const done = s.log.filter((e) => e.grade != null);
+  const n = { correct: 0, almost: 0, wrong: 0 };
+  const missed = [];
+  for (const e of done) {
+    const o = outcome(e); n[o]++;
+    if ((o === 'wrong' || e.grade === 'again') && !missed.some((m) => m.id === e.id)) missed.push({ id: e.id, answer: e.answer, verdict: e.verdict });
+  }
+  return { answered: done.length, ...n, mastered: s.mastered.size, missed };
 }

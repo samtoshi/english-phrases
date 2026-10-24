@@ -6,7 +6,7 @@ const CONTRACTIONS = [
   [/\b(im|ive|youre|youve|theyre|weve|dont|doesnt|didnt|isnt|arent|wasnt|werent|cant|couldnt|wouldnt|shouldnt|havent|hasnt|thats|whats|theres|heres)\b/g,
     (w) => ({ im: "i'm", ive: "i've", youre: "you're", youve: "you've", theyre: "they're", weve: "we've", cant: "can't" }[w] || w.replace(/(nt|s)$/, (x) => (x === 'nt' ? "n't" : "'s")))],
   [/\bcan't\b/g, 'can not'], [/\bcannot\b/g, 'can not'], [/\bwon't\b/g, 'will not'], [/\bshan't\b/g, 'shall not'],
-  [/\bain't\b/g, 'am not'], [/\blet's\b/g, 'let us'], [/\by'all\b/g, 'you all'],
+  [/^lets\b/, 'let us'], [/\bain't\b/g, 'am not'], [/\blet's\b/g, 'let us'], [/\by'all\b/g, 'you all'],
   [/\b(it|that|what|there|here|who|where|how|he|she|this|everything|nothing|something)'s\b/g, '$1 is'],
   [/n't\b/g, ' not'], [/'re\b/g, ' are'], [/'m\b/g, ' am'], [/'ve\b/g, ' have'], [/'ll\b/g, ' will'], [/'d\b/g, ' would'],
   [/\bgonna\b/g, 'going to'], [/\bwanna\b/g, 'want to'], [/\bgotta\b/g, 'got to'],

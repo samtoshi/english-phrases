@@ -3,12 +3,14 @@ import { GRADES, dayIndex, previewLabel, cardStatus, streak, upcoming } from './
 import { Store } from './store.js';
 import { parseImport, splitNote, MY_LESSON } from './data.js';
 import { judge, wordDiff, repeatOk } from './match.js';
-import { buildList, Session, SET_SIZE, SETS_BEFORE_CONFIRM } from './session.js';
+import { buildList, Session, SET_SIZE, SETS_BEFORE_CONFIRM, summarize } from './session.js';
+import { explain } from './explain.js';
+import { askAI, aiHtml, AI_ERR } from './ai.js';
 import { CloudSync } from './cloud.js';
 import { parseSheetRef, sheetRefString, sheetUrl } from './sheets.js';
 import { speak, speakFromTap, stopSpeak, canSpeak, canListen, listen, armSpeechGestures, onSpeechBlocked } from './voice.js';
 
-export const APP_VERSION = '1.2.0';
+export const APP_VERSION = '1.3.0';
 const $app = document.getElementById('app');
 const $tab = document.getElementById('tabbar');
 const store = new Store();
@@ -30,7 +32,7 @@ function stopMic() { if (mic) { try { mic.abort(); } catch {} mic = null; } }
 
 // ---------- ルーター ----------
 function route() {
-  stopMic();
+  stopMic(); closeAsk();
   const h = location.hash.replace(/^#\/?/, '');
   const [name, arg] = h.split('/');
   if (name !== 'study') { stopSpeak(); document.body.classList.remove('studying'); }
@@ -69,6 +71,7 @@ function viewHome() {
       <a class="mode" href="#/lessons"><b>レッスン</b><span>えらんで練習</span></a>
       <button class="mode" id="mWeak" ${weakN ? '' : 'disabled'}><b>苦手だけ</b><span>${weakN}問</span></button>
     </div>
+    <button class="btn block ai-btn" id="askHome">💬 AIに質問（英語の表現・文法など）</button>
     <div class="sec">覚えぐあい</div>
     <div class="panel">
       ${barHtml(st.mastered, st.learning, st.total)}
@@ -78,6 +81,7 @@ function viewHome() {
   bindSheetButtons();
   document.getElementById('mRandom').onclick = () => startSession('random');
   document.getElementById('mWeak').onclick = () => startSession('weak');
+  document.getElementById('askHome').onclick = () => openAsk(null);
 }
 function barHtml(m, s, total) {
   const p = (n) => (total ? (100 * n) / total : 0).toFixed(1);
@@ -104,8 +108,12 @@ function startSession(mode, lesson = '') {
   newCard();
   go('#/study');
 }
+function startIds(ids, label) {
+  session = { s: new Session(ids, { mode: 'retry', label }), phase: 'ask', setCorrect: 0 };
+  newCard(); go('#/study'); viewStudy();
+}
 function newCard() {
-  Object.assign(session, { phase: 'ask', answer: '', res: null, graded: null, reps: 0, repMsg: '', repNg: false, heard: '' });
+  Object.assign(session, { phase: 'ask', answer: '', res: null, notes: [], graded: null, reps: 0, repMsg: '', repNg: false, heard: '' });
 }
 function cur() { return session && store.card(session.s.current); }
 
@@ -113,14 +121,14 @@ function viewStudy() {
   if (!session) { go('#/'); return; }
   document.body.classList.add('studying');
   const s = session.s;
-  if (['setEnd', 'bigEnd', 'done'].includes(session.phase)) return renderBreak();
+  if (['setEnd', 'bigEnd', 'done', 'stopped'].includes(session.phase)) return renderBreak();
   const c = cur();
   if (!c) { session.phase = 'done'; return renderBreak(); }
   const { hint, memo } = splitNote(c.note);
   const dots = Array.from({ length: SET_SIZE }, (_, i) => `<i class="${i < s.posInSet - 1 ? 'done' : i === s.posInSet - 1 ? 'cur' : ''}"></i>`).join('');
   const revealed = session.phase !== 'ask';
   $app.innerHTML = `
-    <div class="study-top"><a class="back" href="#/" id="quit">×</a>
+    <div class="study-top"><button class="btn stop" id="quit">■ ストップ</button>
       <div class="prog"><div class="dots">${dots}</div><div class="head-meta">${esc(s.label)} ・ ${s.setNo}セット目 ・ 残り${s.left}問</div></div></div>
     <div class="qcard">
       <div class="lesson-name">${esc(c.lesson)}${c.theme ? '　' + esc(c.theme) : ''}${cardStatus(store.state(c.id)) === 'new' ? '<span class="tag">新しい</span>' : ''}</div>
@@ -139,7 +147,22 @@ function answerBoxHtml(c, memo) {
     <div class="model en"><span>${esc(c.english)}</span>${canSpeak() ? '<button class="speak" id="speakBtn" aria-label="読み上げ">🔊</button>' : ''}</div>
     ${r && r.verdict !== 'empty' && r.verdict !== 'exact' ? `<div class="yours"><div class="lbl">あなたの答え</div><div class="diff en">${diffHtml(session.answer, c.english)}</div></div>` : ''}
     ${memo ? `<div class="memo">${esc(memo)}</div>` : ''}
+    ${notesHtml()}
+    ${aiReady() ? `<div class="ai-row">
+      ${r && (r.verdict === 'close' || r.verdict === 'diff') ? '<button class="btn ai-btn" id="askWhy">💬 AIにくわしく聞く</button>' : ''}
+      <button class="btn ai-btn" id="askHere">💬 AIに質問</button></div>` : ''}
   </div>`;
+}
+/** まちがい・ほぼ正解のときの、文法の説明（ルールで自動チェック） */
+function notesHtml() {
+  const n = session.notes || [];
+  if (!n.length) return '';
+  return `<div class="notes"><div class="lbl">どこがちがう？（自動チェック）</div>
+    ${n.map((x) => `<div class="note ${x.ok ? 'ok' : ''}"><b>${esc(x.title)}</b>${esc(x.text)}</div>`).join('')}</div>`;
+}
+const aiReady = () => !!store.data.cloud;
+function phraseCtx(c, withAnswer) {
+  return { japanese: c.japanese, english: c.english, answer: withAnswer ? session.answer : '', notes: withAnswer ? (session.notes || []).filter((x) => !x.ok).map((x) => `${x.title}：${x.text}`) : [] };
 }
 function diffHtml(answer, model) {
   return wordDiff(answer, model).map((d) => (d.t === 'ok' ? esc(d.w) : `<span class="${d.t}">${esc(d.w)}</span>`)).join(' ');
@@ -175,8 +198,10 @@ function bottomHtml(c) {
 }
 function bindStudy(c) {
   const $ = (id) => document.getElementById(id);
-  $('quit').onclick = (e) => { e.preventDefault(); stopMic(); stopSpeak(); session = null; go('#/'); };
+  $('quit').onclick = () => stopSession();
   const sb = $('speakBtn'); if (sb) sb.onclick = () => say(c.english, true);
+  const aw = $('askWhy'); if (aw) aw.onclick = () => openAsk(phraseCtx(c, true), '私の答えはどこがちがいますか？文法的にくわしく教えてください。');
+  const ah = $('askHere'); if (ah) ah.onclick = () => openAsk(phraseCtx(c, !!session.answer && session.res && session.res.verdict !== 'exact'));
   if (session.phase === 'ask') {
     const inp = $('ans');
     inp.oninput = () => { session.answer = inp.value; };
@@ -197,6 +222,8 @@ function bindStudy(c) {
 function check(c, fromTap) {
   stopMic();
   session.res = judge(session.answer, c.english);
+  session.notes = ['close', 'diff'].includes(session.res.verdict) ? explain(session.answer, c.english) : [];
+  session.s.checked(session.res.verdict, session.answer);
   session.phase = 'reveal';
   viewStudy();
   if (store.settings.autoSpeak) say(c.english, fromTap);
@@ -252,24 +279,111 @@ function next() {
   if (r === 'next') { newCard(); viewStudy(); window.scrollTo(0, 0); return; }
   session.phase = r; viewStudy();
 }
+/** ストップ：ここまでの結果を出す（まだ1問も採点していなければホームへ） */
+function stopSession() {
+  stopMic(); stopSpeak(); closeAsk();
+  if (!summarize(session.s).answered) { session = null; go('#/'); return; }
+  session.phase = 'stopped'; viewStudy(); window.scrollTo(0, 0);
+}
 function renderBreak() {
   const s = session.s; const ph = session.phase;
-  const msg = ph === 'done' ? 'おつかれさまでした。このモードの問題は全部終わりです。'
+  const r = summarize(s);
+  const fin = ph === 'done' || ph === 'stopped';
+  const msg = ph === 'stopped' ? 'ここで終わりにしました。おつかれさまでした。'
+    : ph === 'done' ? 'おつかれさまでした。このモードの問題は全部終わりです。'
     : ph === 'bigEnd' ? `${SETS_BEFORE_CONFIRM}セット（${s.answered}問）終わりました。まだ続けますか？`
     : `${s.setNo - 1}セット目が終わりました。続けますか？`;
-  const setScore = ph === 'done' ? '' : `<div class="small">このセット：言えた ${session.setCorrect} / ${SET_SIZE}</div>`;
-  $app.innerHTML = `<div class="top"><h1>${esc(s.label)}</h1></div>
+  const setScore = fin ? '' : `<div class="small">このセット：言えた ${session.setCorrect} / ${SET_SIZE}</div>`;
+  const missed = r.missed.map((m) => ({ ...m, c: store.card(m.id) })).filter((m) => m.c);
+  $app.innerHTML = `<div class="top"><h1>${ph === 'stopped' ? 'ここまでの結果' : esc(s.label)}</h1></div>
     <div class="panel center">
-      <div class="big-num">${s.correct}<small style="font-size:18px"> / ${s.answered}</small></div>
-      <div class="small">言えた / 回答 ・ マスター ${s.mastered.size}</div>
+      <div class="small">${esc(s.label)}</div>
+      <div class="big-num">${r.answered}<small style="font-size:18px"> 問</small></div>
+      <div class="result-grid">
+        <div class="ok"><b>${r.correct}</b><span>正解</span></div>
+        <div class="almost"><b>${r.almost}</b><span>ほぼ正解</span></div>
+        <div class="ng"><b>${r.wrong}</b><span>まちがい</span></div>
+        <div class="ms"><b>${r.mastered}</b><span>3回リピート<br>マスター</span></div>
+      </div>
       ${setScore}
       <p>${msg}</p>
-      ${ph === 'done' ? '' : '<button class="btn primary big block" id="contBtn">続ける</button>'}
-      <button class="btn block" id="endBtn">終わる</button>
-    </div>`;
+      ${fin ? '' : '<button class="btn primary big block" id="contBtn">続ける</button>'}
+      ${fin && missed.length ? '<button class="btn primary big block" id="retryBtn">まちがえたフレーズをもう一度</button>' : ''}
+      <button class="btn block" id="endBtn">${fin ? 'ホームへ' : '終わる'}</button>
+    </div>
+    ${missed.length ? `<div class="sec">まちがえたフレーズ（${missed.length}）</div>
+    <div class="list">${missed.map((m) => `<div class="item missed">
+      <div class="ja">${esc(m.c.japanese)}</div>
+      <div class="en">${esc(m.c.english)}${canSpeak() ? ` <button class="speak sm" data-say="${esc(m.c.english)}" aria-label="読み上げ">🔊</button>` : ''}</div>
+      ${m.answer ? `<div class="m">あなたの答え：<span class="en">${esc(m.answer)}</span></div>` : '<div class="m">（答えを見た）</div>'}
+    </div>`).join('')}</div>` : ''}`;
   const cb = document.getElementById('contBtn');
   if (cb) cb.onclick = () => { session.setCorrect = 0; newCard(); viewStudy(); };
+  const rb = document.getElementById('retryBtn');
+  if (rb) rb.onclick = () => startIds(missed.map((m) => m.id), 'まちがえたフレーズ');
+  $app.querySelectorAll('[data-say]').forEach((b) => { b.onclick = () => say(b.dataset.say, true); });
   document.getElementById('endBtn').onclick = () => { session = null; go('#/'); };
+}
+
+// ---------- AIに質問 ----------
+// 画面の上に重ねて出す。ログインしていないときはログインをすすめる
+let ask = null; // { ctx, history: [{role, text}], busy }
+function openAsk(ctx, preset = '') {
+  stopMic(); stopSpeak();
+  ask = { ctx, history: [], busy: false, err: '' };
+  renderAsk();
+  if (preset && aiReady()) sendAsk(preset);
+}
+function closeAsk() { ask = null; const m = document.getElementById('askModal'); if (m) m.remove(); }
+function renderAsk() {
+  let m = document.getElementById('askModal');
+  if (!m) { m = document.createElement('div'); m.id = 'askModal'; m.className = 'modal'; document.body.appendChild(m); }
+  const c = ask.ctx;
+  const chips = c ? ['この表現の使い方は？', '似た言い方・言いかえは？', 'もっとカジュアル／ていねいに言うと？', '文法をくわしく'] : ['現在完了と過去形のちがいは？', 'a と the の使い分けは？', '会議でよく使う表現は？'];
+  m.innerHTML = `<div class="sheet" role="dialog" aria-label="AIに質問">
+    <div class="sheet-top"><b>💬 AIに質問</b><button class="back" id="askClose" aria-label="閉じる">×</button></div>
+    ${c ? `<div class="ask-ctx"><div class="ja">${esc(c.japanese)}</div><div class="en">${esc(c.english)}</div>${c.answer ? `<div class="m">あなたの答え：${esc(c.answer)}</div>` : ''}</div>` : ''}
+    ${!aiReady() ? `<div class="banner">AIに質問するには、ログインが必要です。<a href="#/settings" id="askLogin">設定でログインする</a></div>` : `
+    <div class="ask-log" id="askLog">${ask.history.map((h) => `<div class="msg ${h.role}">${h.role === 'ai' ? aiHtml(h.text) : esc(h.text)}</div>`).join('')}
+      ${ask.busy ? '<div class="msg ai busy">考えています…</div>' : ''}
+      ${ask.err ? `<div class="msg err">${esc(ask.err)}</div>` : ''}</div>
+    ${ask.history.length ? '' : `<div class="chips">${chips.map((t) => `<button class="chip" data-q="${esc(t)}">${esc(t)}</button>`).join('')}</div>`}
+    <textarea id="askQ" rows="2" placeholder="${c ? 'このフレーズ・関連する表現・文法について質問' : '英語の表現や文法について質問'}"></textarea>
+    <button class="btn primary block" id="askSend" ${ask.busy ? 'disabled' : ''}>${ask.history.length ? '続けて質問する' : '質問する'}</button>
+    <div class="small">答えは AI（Gemini）が作ります。まちがうこともあります。</div>`}
+  </div>`;
+  const $ = (id) => document.getElementById(id);
+  $('askClose').onclick = closeAsk;
+  m.onclick = (e) => { if (e.target === m) closeAsk(); };
+  const lg = $('askLogin'); if (lg) lg.onclick = () => { closeAsk(); if (session) session = null; };
+  const q = $('askQ');
+  if (q) {
+    $('askSend').onclick = () => { const t = q.value.trim(); if (t) sendAsk(t); else q.focus(); };
+    q.onkeydown = (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) $('askSend').click(); };
+    m.querySelectorAll('.chip').forEach((b) => { b.onclick = () => sendAsk(b.dataset.q); });
+  }
+  const log = $('askLog'); if (log) log.scrollTop = log.scrollHeight;
+}
+async function sendAsk(text) {
+  if (!ask || ask.busy) return;
+  const me = ask;
+  me.err = ''; me.busy = true;
+  const history = me.history.slice();
+  me.history.push({ role: 'me', text });
+  renderAsk();
+  try {
+    const ans = await askAI(text, { history, ctx: me.ctx });
+    if (ask !== me) return;
+    me.history.push({ role: 'ai', text: ans });
+  } catch (e) {
+    if (ask !== me) return;
+    console.warn('AI', e);
+    me.history.pop();
+    me.err = AI_ERR[e.code] || `AIに聞けませんでした（${e.message || e.code || 'エラー'}）`;
+  }
+  me.busy = false; renderAsk();
+  if (!me.err) { const q = document.getElementById('askQ'); if (q) q.value = ''; }
+  else { const q = document.getElementById('askQ'); if (q && !q.value) q.value = text; }
 }
 
 // ---------- 進み具合 ----------
