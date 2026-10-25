@@ -1,3 +1,4 @@
+import { mergeHist } from './history.js';
 // 端末どうし（とクラウド）の記録をまぜる。オフラインで別々に勉強しても大丈夫なように。
 // どれも「時刻（ts）が新しい方を残す」。anki-app の merge.js と同じ考え方。
 
@@ -67,15 +68,17 @@ export function stableJSON(v) {
  * リセット（resetAt）が新しい方にそろえ、それより前の集計は捨てる
  */
 export function mergeMeta(local, remote = {}) {
-  const r = { days: remote.days || [], newDays: remote.newDays || {}, reps: remote.reps || {}, resetAt: remote.resetAt || 0, settings: remote.settings || null, settingsTs: remote.settingsTs || 0 };
-  let L = { days: local.days || [], newDays: local.newDays || {}, reps: local.reps || {}, resetAt: local.resetAt || 0 };
+  const r = { days: remote.days || [], newDays: remote.newDays || {}, reps: remote.reps || {}, hist: remote.hist || {}, resetAt: remote.resetAt || 0, settings: remote.settings || null, settingsTs: remote.settingsTs || 0 };
+  let L = { days: local.days || [], newDays: local.newDays || {}, reps: local.reps || {}, hist: local.hist || {}, resetAt: local.resetAt || 0 };
   let changed = false;
-  if (r.resetAt > L.resetAt) { L = { days: [], newDays: {}, reps: {}, resetAt: r.resetAt }; changed = true; }
+  if (r.resetAt > L.resetAt) { L = { days: [], newDays: {}, reps: {}, hist: {}, resetAt: r.resetAt }; changed = true; }
   const useRemote = r.resetAt >= L.resetAt;
   const days = [...new Set([...L.days, ...(useRemote ? r.days : [])].map(Number))].sort((a, b) => a - b);
   const newDays = { ...L.newDays };
   const reps = { ...L.reps };
+  let hist = { ...L.hist };
   if (useRemote) {
+    const mh = mergeHist(L.hist, r.hist); hist = mh.hist; if (mh.changed) changed = true;
     for (const [k, v] of Object.entries(r.newDays)) if ((newDays[k] || 0) < v) { newDays[k] = v; changed = true; }
     for (const [k, v] of Object.entries(r.reps)) if ((reps[k] || 0) < v) { reps[k] = v; changed = true; }
   }
@@ -85,5 +88,5 @@ export function mergeMeta(local, remote = {}) {
     // マイクを使うかどうかは端末ごと（同期しない）
     settings = { ...local.settings, ...r.settings, useMic: local.settings?.useMic }; settingsTs = r.settingsTs; changed = true;
   }
-  return { days, newDays, reps, resetAt: L.resetAt, settings, settingsTs, changed };
+  return { days, newDays, reps, hist, resetAt: L.resetAt, settings, settingsTs, changed };
 }

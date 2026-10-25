@@ -36,13 +36,13 @@ export async function syncOnce(store, api, { full = true } = {}) {
   const ms = mergeStates(data.states, remote.states || {});
   data.states = ms.states;
   const mm = mergeMeta({ ...data, settings: data.settings }, { ...remote, settings: remote.settings ? { ...remote.settings } : null });
-  Object.assign(data, { days: mm.days, newDays: mm.newDays, reps: mm.reps, resetAt: mm.resetAt, settings: mm.settings, settingsTs: mm.settingsTs });
+  Object.assign(data, { days: mm.days, newDays: mm.newDays, reps: mm.reps, hist: mm.hist, resetAt: mm.resetAt, settings: mm.settings, settingsTs: mm.settingsTs });
   const statesPush = Object.fromEntries(ms.push.map((id) => [id, data.states[id]]));
   const meta = {
-    days: data.days, newDays: data.newDays, reps: data.reps, resetAt: data.resetAt || 0,
+    days: data.days, newDays: data.newDays, reps: data.reps, hist: data.hist || {}, resetAt: data.resetAt || 0,
     settings: Object.fromEntries(SYNC_SETTINGS.map((k) => [k, data.settings[k]])), settingsTs: data.settingsTs || 0,
   };
-  const remoteMeta = { days: remote.days || [], newDays: remote.newDays || {}, reps: remote.reps || {}, resetAt: remote.resetAt || 0, settings: remote.settings || null, settingsTs: remote.settingsTs || 0 };
+  const remoteMeta = { days: remote.days || [], newDays: remote.newDays || {}, reps: remote.reps || {}, hist: remote.hist || {}, resetAt: remote.resetAt || 0, settings: remote.settings || null, settingsTs: remote.settingsTs || 0 };
   const metaChanged = stableJSON(meta) !== stableJSON(remoteMeta);
   if (ms.push.length || metaChanged || !Object.keys(remote).length) await api.setState({ states: statesPush, meta });
   store._list = null;

@@ -1,10 +1,10 @@
 // オフラインでも使えるようにするサービスワーカー（アプリ本体のファイルを変えたら VERSION を上げる）
-const VERSION = 'v5';
+const VERSION = 'v6';
 // 同じサイト（samtoshi.github.io）の anki-app とキャッシュの置き場が共通なので、名前に ep- をつけて、自分のものだけ消す
 const P = 'ep-';
 const SHELL = [
   './', 'index.html', 'css/style.css', 'manifest.webmanifest',
-  'js/app.js', 'js/srs.js', 'js/store.js', 'js/data.js', 'js/match.js', 'js/session.js', 'js/voice.js', 'js/merge.js', 'js/cloud.js', 'js/cloudsync.js', 'js/sheets.js', 'js/explain.js', 'js/ai.js', 'js/firebase-config.js',
+  'js/app.js', 'js/srs.js', 'js/store.js', 'js/data.js', 'js/match.js', 'js/session.js', 'js/voice.js', 'js/merge.js', 'js/cloud.js', 'js/cloudsync.js', 'js/sheets.js', 'js/explain.js', 'js/ai.js', 'js/history.js', 'js/firebase-config.js',
   'icons/icon-192.png', 'icons/apple-touch-icon.png',
 ];
 self.addEventListener('install', (e) => {

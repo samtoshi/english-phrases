@@ -4,13 +4,14 @@ import { Store } from './store.js';
 import { parseImport, splitNote, MY_LESSON } from './data.js';
 import { judge, wordDiff, repeatOk } from './match.js';
 import { buildList, Session, SET_SIZE, SETS_BEFORE_CONFIRM, summarize } from './session.js';
+import { buildSeries, replayLog, chartSvg } from './history.js';
 import { explain } from './explain.js';
 import { askAI, aiHtml, AI_ERR } from './ai.js';
 import { CloudSync } from './cloud.js';
 import { parseSheetRef, sheetRefString, sheetUrl } from './sheets.js';
 import { speak, speakFromTap, stopSpeak, canSpeak, canListen, listen, armSpeechGestures, onSpeechBlocked } from './voice.js';
 
-export const APP_VERSION = '1.3.1';
+export const APP_VERSION = '1.4.0';
 const $app = document.getElementById('app');
 const $tab = document.getElementById('tabbar');
 const store = new Store();
@@ -401,12 +402,33 @@ function viewProgress() {
       <div><b>${st.repeated}</b><span>3回リピート済</span></div>
     </div>
     <p class="small">「覚えた」＝次の復習が${st.masteredDays}日以上先になったフレーズ。勉強した日：${store.data.days.length}日 ・ 今日の回答：${st.todayCount}</p>
+    <div class="sec">覚えたフレーズの数（グラフ）</div>
+    <div class="panel chart-panel">
+      <div class="seg" id="rangeSeg">${[[30, '30日'], [90, '90日'], [0, '全期間']].map(([d, l]) => `<button data-d="${d}" class="${chartDays === d ? 'on' : ''}">${l}</button>`).join('')}</div>
+      <div id="chartBox"></div>
+      <div class="legend"><span class="k m"></span>覚えた <span class="k l"></span>練習中 <span class="k r"></span>3回リピート済</div>
+      <p class="small">「覚えた」は、正しく言えた復習を何回か続けると増えます（はやくて2〜3週間後から）。色のうすい部分は、採点の記録から計算しなおした日です。</p>
+    </div>
     <div class="sec">これからの復習（7日）</div>
     <div class="week">${up.map((n, i) => `<div>${i === 0 ? '今日' : wd[new Date(Date.now() + i * 864e5).getDay()]}<b>${n}</b></div>`).join('')}</div>
     <div class="sec">レッスンごと</div>
     <div class="list">${ls.map((L) => `<div class="item lesson"><div class="t">${esc(L.name)} <span class="m">${esc(L.theme)}</span></div>
       <div class="m">覚えた ${L.mastered} / ${L.total} ・ 練習済み ${L.seen} ・ リピート済 ${L.repeated}</div>${barHtml(L.mastered, L.seen - L.mastered, L.total)}</div>`).join('')}</div>`;
+  const drawChart = () => {
+    const series = buildSeries({ hist: store.data.hist, replay, current: { m: st.mastered, l: st.learning, r: st.repeated }, today: t, days: chartDays });
+    document.getElementById('chartBox').innerHTML = chartSvg(series);
+  };
+  const replay = replayLog(store.data.log, store.cards.map((c) => c.id));
+  drawChart();
+  document.getElementById('rangeSeg').onclick = (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    chartDays = +b.dataset.d;
+    for (const x of document.querySelectorAll('#rangeSeg button')) x.classList.toggle('on', x === b);
+    drawChart();
+  };
+  if (store.snapshot(t)) store.changed(); // 今日の数を記録（ほかの端末にも同期）
 }
+let chartDays = 30;
 
 // ---------- フレーズ一覧・編集 ----------
 let phraseFilter = { q: '', lesson: '' };

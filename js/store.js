@@ -1,6 +1,7 @@
 // 端末の中の記録（localStorage）。フレーズ・覚えぐあい・設定をまとめて1つに保存します。
 import { schedule, dayIndex, cardStatus, MASTERED_DAYS, isRelearn } from './srs.js';
 import { SAMPLE_PHRASES, MY_LESSON } from './data.js';
+import { snapshotOf } from './history.js';
 
 export const KEY = 'english-phrases-v1';
 // sheetId：読みこむ Google スプレッドシート（URL か ID。クラウドの設定に保存し、アプリのファイルには入れない）
@@ -22,13 +23,13 @@ export function emptyData() {
   const cards = {};
   for (const s of SAMPLE_PHRASES) cards[s.id] = { ...s };
   // ts：最後に変えた時刻（クラウドと端末をまぜるときに、新しい方を残す）。サンプルは ts 0
-  return { v: 1, cards, deleted: {}, states: {}, last: {}, days: [], newDays: {}, reps: {}, log: [], settings: { ...DEFAULT_SETTINGS }, settingsTs: 0,
+  return { v: 1, cards, deleted: {}, states: {}, last: {}, days: [], newDays: {}, reps: {}, hist: {}, log: [], settings: { ...DEFAULT_SETTINGS }, settingsTs: 0,
     resetAt: 0, cardsDirty: false, cloud: null, created: Date.now() };
 }
 export function migrate(d) {
   if (!d || d.v !== 1) return emptyData();
   const e = emptyData();
-  return { ...e, ...d, deleted: d.deleted || {}, settings: { ...e.settings, ...(d.settings || {}) } };
+  return { ...e, ...d, deleted: d.deleted || {}, hist: d.hist || {}, settings: { ...e.settings, ...(d.settings || {}) } };
 }
 
 const SRC_RANK = { import: 0, mine: 1, sample: 2 };
@@ -140,10 +141,19 @@ export class Store {
     if (!this.data.days.includes(today)) this.data.days.push(today);
     this.data.log.push({ t: now, id, g });
     if (this.data.log.length > 5000) this.data.log.splice(0, this.data.log.length - 5000);
+    this.snapshot(today, now);
     return this.changed();
   }
   /** 3回リピートが終わった */
-  repeatDone(id) { this.data.reps[id] = (this.data.reps[id] || 0) + 1; return this.changed(); }
+  repeatDone(id, today = dayIndex(), now = Date.now()) { this.data.reps[id] = (this.data.reps[id] || 0) + 1; this.snapshot(today, now); return this.changed(); }
+  /** グラフ用に、今日の「覚えた・練習中・3回リピート済」の数を残す（変わったときだけ。変わったら true） */
+  snapshot(today = dayIndex(), now = Date.now()) {
+    const c = snapshotOf(this.cards, this.states, this.data.reps);
+    const h = (this.data.hist ||= {})[today];
+    if (h && h.m === c.m && h.l === c.l && h.r === c.r) return false;
+    this.data.hist[today] = { ...c, ts: now };
+    return true;
+  }
 
   /** 進み具合 */
   stats(today = dayIndex()) {
@@ -193,7 +203,7 @@ export class Store {
   resetProgress(now = Date.now()) {
     const states = {};
     for (const id of Object.keys(this.data.states)) states[id] = { seen: 0, ts: now };
-    Object.assign(this.data, { states, last: {}, days: [], newDays: {}, reps: {}, log: [], resetAt: now });
+    Object.assign(this.data, { states, last: {}, days: [], newDays: {}, reps: {}, hist: {}, log: [], resetAt: now });
     return this.changed();
   }
 }
